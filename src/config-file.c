@@ -28,9 +28,9 @@
 
 static const gint DEFAULT_CONNECTTIMEOUT  = 20;     // 20 sec.
 static const gint DEFAULT_TIMEOUT         = 60;     // 1 min.
-static const gint DEFAULT_RETRY_WAIT      = 5 * 60; // 5 min.
+static const gint DEFAULT_RETRY_WAIT      = 60;     // 1 min.
 static const gboolean DEFAULT_SSL         = TRUE;
-static const gboolean DEFAULT_SSL_VERIFY  = TRUE;
+static const gboolean DEFAULT_SSL_VERIFY  = FALSE;
 static const gchar * DEFAULT_LOG_LEVEL    = "message";
 
 void config_file_free(struct config *config)
@@ -41,6 +41,7 @@ void config_file_free(struct config *config)
         g_free(config->auth_token);
         g_free(config->gateway_token);
         g_free(config->bundle_download_location);
+        g_free(config->original_bundle_download_location);
         g_hash_table_destroy(config->device);
 }
 
@@ -197,12 +198,33 @@ struct config* load_config_file(const gchar* config_file, GError** error)
                 return NULL;
         if (!get_key_string(ini_file, "client", "bundle_download_location", &config->bundle_download_location, NULL, error))
                 return NULL;
+        if (!get_key_string(ini_file, "client", "bundle_download_location", &config->original_bundle_download_location, NULL, error))
+                return NULL;
         if (!get_key_bool(ini_file, "client", "ssl", &config->ssl, DEFAULT_SSL, error))
                 return NULL;
         if (!get_key_bool(ini_file, "client", "ssl_verify", &config->ssl_verify, DEFAULT_SSL_VERIFY, error))
                 return NULL;
-        if (!get_group(ini_file, "device", &config->device, error))
-                return NULL;
+
+        if (!get_group(ini_file, "device", &config->device, error)) {
+                gchar *p_stdout = NULL;
+
+                g_error_free(*error);
+                config->device = g_hash_table_new(g_str_hash, g_str_equal);
+
+                if (g_spawn_command_line_sync("bhtinfo --serial", &p_stdout, NULL, NULL, NULL)) {
+                        g_strchomp(p_stdout);
+                        g_hash_table_insert(config->device, "serial", p_stdout);
+                } else {
+                        g_hash_table_insert(config->device, "serial", "");
+                }
+
+                if (g_spawn_command_line_sync("bhtinfo --simno", &p_stdout, NULL, NULL, NULL)) {
+                        g_strchomp(p_stdout);
+                        g_hash_table_insert(config->device, "iccid", p_stdout);
+                } else {
+                        g_hash_table_insert(config->device, "iccid", "");
+                }
+        }
 
         if (!get_key_int(ini_file, "client", "connect_timeout", &val_int, DEFAULT_CONNECTTIMEOUT, error))
                 return NULL;

@@ -107,6 +107,31 @@ static size_t curl_write_to_file_cb(void *ptr, size_t size, size_t nmemb, struct
 }
 
 /**
+ * @brief Calculating checksum of a file
+ *
+ */
+static gchar *get_hash(const gchar *filepath, GChecksumType hash_type)
+{
+        FILE *fp;
+        if (NULL != (fp = fopen(filepath, "rb"))) {
+                guchar buffer[65536];
+                gint read_bytes;
+                gchar *result;
+                GChecksum *checksum = g_checksum_new(hash_type);
+                while ((read_bytes = fread(buffer, 1, sizeof(buffer), fp)) > 0)
+                        g_checksum_update(checksum, buffer, read_bytes);
+
+                result = g_strdup((gchar *) g_checksum_get_string(checksum));
+
+                fclose(fp);
+                g_checksum_free(checksum);
+
+                return result;
+        }
+        return g_strdup("");
+}
+
+/**
  * @brief download software bundle to file.
  *
  * @param[in]  download_url   URL to Software bundle
@@ -118,19 +143,43 @@ static size_t curl_write_to_file_cb(void *ptr, size_t size, size_t nmemb, struct
  */
 static gboolean get_binary(const gchar* download_url, const gchar* file, gint64 filesize, struct get_binary_checksum *checksum, gint *http_code, GError **error)
 {
-        FILE *fp = fopen(file, "wb");
-        if (fp == NULL) {
-                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
-                            "Failed to open file for download: %s", file);
-                return FALSE;
-        }
-
         CURL *curl = curl_easy_init();
         if (!curl) {
-                fclose(fp);
                 g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
                             "Unable to start libcurl easy session");
                 return FALSE;
+        }
+        FILE *fp;
+        if (access(file, F_OK ) != -1) {
+                GString *filesize_char = g_string_new(NULL);
+
+                fp = fopen(file, "a+");
+                g_message("Continuing downloading!");
+                if (fp == NULL) {
+	                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+	                            "Failed to open file for download: %s", file);
+	                return FALSE;
+                }
+                // Continuing downloading
+                fseek(fp, 0, SEEK_END); // seek to end of file
+                gint64 filesize_append = 0;
+                filesize_append = ftell(fp); // get current file pointer
+                fseek(fp, 0, SEEK_SET); // seek back to beginning of file
+                g_debug("Filesize_Append: %"G_GINT64_FORMAT, filesize_append);
+                g_string_printf(filesize_char, "%"G_GINT64_FORMAT, filesize_append);
+                g_debug("Filesize: %"G_GINT64_FORMAT, filesize);
+                g_string_append_c(filesize_char, '-');
+                curl_easy_setopt(curl, CURLOPT_RANGE, filesize_char->str);
+
+                g_string_free(filesize_char, TRUE);
+        } else {
+		fp = fopen(file, "wb");
+                g_debug("Downloading file for the first time!");
+	        if (fp == NULL) {
+	                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+	                            "Failed to open file for download: %s", file);
+	                return FALSE;
+	        }
         }
 
         struct get_binary gb = {
@@ -178,10 +227,13 @@ static gboolean get_binary(const gchar* download_url, const gchar* file, gint64 
                             "HTTP request failed: %s",     // error message format string
                             curl_easy_strerror(res));
         }
-
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
         fclose(fp);
+        // Re-calculating the checksum
+        checksum->checksum_result = get_hash(file, checksum->checksum_type);
+        // g_debug("%s", checksum->checksum_result);
+
         return (res == CURLE_OK);
 }
 
@@ -509,6 +561,14 @@ static void process_deployment_cleanup()
         }
 }
 
+static void process_deployment_cleanup_action_id()
+{
+        //g_clear_pointer(action_id, g_free);
+        gpointer ptr = action_id;
+        action_id = NULL;
+        g_free(ptr);
+}
+
 gboolean install_complete_cb(gpointer ptr)
 {
         struct on_install_complete_userdata *result = ptr;
@@ -531,17 +591,31 @@ gboolean install_complete_cb(gpointer ptr)
         return G_SOURCE_REMOVE;
 }
 
+static void get_unique_download_file_name(const gchar* sha1)
+{
+        GString *temp_bundle_download_location = g_string_new(hawkbit_config->original_bundle_download_location);
+
+        g_string_append_c(temp_bundle_download_location, '.');
+        g_string_append(temp_bundle_download_location, sha1);
+
+        g_free(hawkbit_config->bundle_download_location);
+        hawkbit_config->bundle_download_location = g_string_free(temp_bundle_download_location, FALSE);
+
+        g_debug("############### The new download file path is %s\n", hawkbit_config->bundle_download_location);
+}
+
 static gpointer download_thread(gpointer data)
 {
+        GError *error = NULL;
+        g_autofree gchar *msg = NULL;
+        struct artifact *artifact = data;
+        get_unique_download_file_name(artifact->sha1);
+
         struct on_new_software_userdata userdata = {
                 .install_progress_callback = (GSourceFunc) hawkbit_progress,
                 .install_complete_callback = install_complete_cb,
                 .file = hawkbit_config->bundle_download_location,
         };
-
-        GError *error = NULL;
-        g_autofree gchar *msg = NULL;
-        struct artifact *artifact = data;
         g_message("Start downloading: %s", artifact->download_url);
 
         // setup checksum
@@ -557,7 +631,7 @@ static gpointer download_thread(gpointer data)
                 g_autofree gchar *msg = g_strdup_printf("Download failed: %s Status: %d", error->message, status);
                 g_clear_error(&error);
                 g_critical("%s", msg);
-                feedback(artifact->feedback_url, action_id, msg, "failure", "closed", NULL);
+                process_deployment_cleanup_action_id();
                 goto down_error;
         }
 
@@ -577,6 +651,7 @@ static gpointer download_thread(gpointer data)
                 feedback(artifact->feedback_url, action_id, msg, "failure", "closed", NULL);
                 g_critical("%s", msg);
                 status = -3;
+                process_deployment_cleanup();
                 goto down_error;
         }
         g_message("File checksum OK.");
@@ -589,7 +664,7 @@ static gpointer download_thread(gpointer data)
 down_error:
         g_free(checksum.checksum_result);
         process_artifact_cleanup(artifact);
-        process_deployment_cleanup();
+        //process_deployment_cleanup();
         return NULL;
 }
 
