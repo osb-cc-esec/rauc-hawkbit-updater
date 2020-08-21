@@ -75,7 +75,7 @@ static long last_run_sec = 0;
  * @param[in] path Path
  * @return If error -1 else free space in bytes
  */
-static long get_available_space(const char* path, GError **error)
+static gint64 get_available_space(const char* path, GError **error)
 {
         struct statvfs stat;
         g_autofree gchar *npath = g_strdup(path);
@@ -85,8 +85,9 @@ static long get_available_space(const char* path, GError **error)
                 g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Failed to calculate free space: %s", g_strerror(errno));
                 return -1;
         }
+
         // the available free space is f_bsize * f_bavail
-        return stat.f_bsize * stat.f_bavail;
+        return (gint64) stat.f_bsize * (gint64) stat.f_bavail;
 }
 
 /**
@@ -107,6 +108,31 @@ static size_t curl_write_to_file_cb(void *ptr, size_t size, size_t nmemb, struct
 }
 
 /**
+ * @brief Calculating checksum of a file
+ *
+ */
+static gchar *get_hash(const gchar *filepath, GChecksumType hash_type)
+{
+        FILE *fp;
+        if (NULL != (fp = fopen(filepath, "rb"))) {
+                guchar buffer[65536];
+                gint read_bytes;
+                gchar *result;
+                GChecksum *checksum = g_checksum_new(hash_type);
+                while ((read_bytes = fread(buffer, 1, sizeof(buffer), fp)) > 0)
+                        g_checksum_update(checksum, buffer, read_bytes);
+
+                result = g_strdup((gchar *) g_checksum_get_string(checksum));
+
+                fclose(fp);
+                g_checksum_free(checksum);
+
+                return result;
+        }
+        return g_strdup("");
+}
+
+/**
  * @brief download software bundle to file.
  *
  * @param[in]  download_url   URL to Software bundle
@@ -118,19 +144,43 @@ static size_t curl_write_to_file_cb(void *ptr, size_t size, size_t nmemb, struct
  */
 static gboolean get_binary(const gchar* download_url, const gchar* file, gint64 filesize, struct get_binary_checksum *checksum, gint *http_code, GError **error)
 {
-        FILE *fp = fopen(file, "wb");
-        if (fp == NULL) {
-                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
-                            "Failed to open file for download: %s", file);
-                return FALSE;
-        }
-
         CURL *curl = curl_easy_init();
         if (!curl) {
-                fclose(fp);
                 g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
                             "Unable to start libcurl easy session");
                 return FALSE;
+        }
+        FILE *fp;
+        if (access(file, F_OK ) != -1) {
+                GString *filesize_char = g_string_new(NULL);
+
+                fp = fopen(file, "a+");
+                g_message("Continuing downloading!");
+                if (fp == NULL) {
+	                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+	                            "Failed to open file for download: %s", file);
+	                return FALSE;
+                }
+                // Continuing downloading
+                fseek(fp, 0, SEEK_END); // seek to end of file
+                gint64 filesize_append = 0;
+                filesize_append = ftell(fp); // get current file pointer
+                fseek(fp, 0, SEEK_SET); // seek back to beginning of file
+                g_debug("Filesize_Append: %"G_GINT64_FORMAT, filesize_append);
+                g_string_printf(filesize_char, "%"G_GINT64_FORMAT, filesize_append);
+                g_debug("Filesize: %"G_GINT64_FORMAT, filesize);
+                g_string_append_c(filesize_char, '-');
+                curl_easy_setopt(curl, CURLOPT_RANGE, filesize_char->str);
+
+                g_string_free(filesize_char, TRUE);
+        } else {
+		fp = fopen(file, "wb");
+                g_debug("Downloading file for the first time!");
+	        if (fp == NULL) {
+	                g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+	                            "Failed to open file for download: %s", file);
+	                return FALSE;
+	        }
         }
 
         struct get_binary gb = {
@@ -178,10 +228,13 @@ static gboolean get_binary(const gchar* download_url, const gchar* file, gint64 
                             "HTTP request failed: %s",     // error message format string
                             curl_easy_strerror(res));
         }
-
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
         fclose(fp);
+        // Re-calculating the checksum
+        checksum->checksum_result = get_hash(file, checksum->checksum_type);
+        // g_debug("%s", checksum->checksum_result);
+
         return (res == CURLE_OK);
 }
 
@@ -509,6 +562,14 @@ static void process_deployment_cleanup()
         }
 }
 
+static void process_deployment_cleanup_action_id()
+{
+        //g_clear_pointer(action_id, g_free);
+        gpointer ptr = action_id;
+        action_id = NULL;
+        g_free(ptr);
+}
+
 gboolean install_complete_cb(gpointer ptr)
 {
         struct on_install_complete_userdata *result = ptr;
@@ -531,17 +592,31 @@ gboolean install_complete_cb(gpointer ptr)
         return G_SOURCE_REMOVE;
 }
 
+static void get_unique_download_file_name(const gchar* sha1)
+{
+        GString *temp_bundle_download_location = g_string_new(hawkbit_config->original_bundle_download_location);
+
+        g_string_append_c(temp_bundle_download_location, '.');
+        g_string_append(temp_bundle_download_location, sha1);
+
+        g_free(hawkbit_config->bundle_download_location);
+        hawkbit_config->bundle_download_location = g_string_free(temp_bundle_download_location, FALSE);
+
+        g_debug("############### The new download file path is %s\n", hawkbit_config->bundle_download_location);
+}
+
 static gpointer download_thread(gpointer data)
 {
+        GError *error = NULL;
+        g_autofree gchar *msg = NULL;
+        struct artifact *artifact = data;
+        get_unique_download_file_name(artifact->sha1);
+
         struct on_new_software_userdata userdata = {
                 .install_progress_callback = (GSourceFunc) hawkbit_progress,
                 .install_complete_callback = install_complete_cb,
                 .file = hawkbit_config->bundle_download_location,
         };
-
-        GError *error = NULL;
-        g_autofree gchar *msg = NULL;
-        struct artifact *artifact = data;
         g_message("Start downloading: %s", artifact->download_url);
 
         // setup checksum
@@ -557,7 +632,7 @@ static gpointer download_thread(gpointer data)
                 g_autofree gchar *msg = g_strdup_printf("Download failed: %s Status: %d", error->message, status);
                 g_clear_error(&error);
                 g_critical("%s", msg);
-                feedback(artifact->feedback_url, action_id, msg, "failure", "closed", NULL);
+                process_deployment_cleanup_action_id();
                 goto down_error;
         }
 
@@ -577,6 +652,7 @@ static gpointer download_thread(gpointer data)
                 feedback(artifact->feedback_url, action_id, msg, "failure", "closed", NULL);
                 g_critical("%s", msg);
                 status = -3;
+                process_deployment_cleanup();
                 goto down_error;
         }
         g_message("File checksum OK.");
@@ -589,10 +665,11 @@ static gpointer download_thread(gpointer data)
 down_error:
         g_free(checksum.checksum_result);
         process_artifact_cleanup(artifact);
-        process_deployment_cleanup();
+        //process_deployment_cleanup();
         return NULL;
 }
 
+//process deployment action
 static gboolean process_deployment(JsonNode *req_root, GError **error)
 {
         GError *ierror = NULL;
@@ -679,14 +756,14 @@ static gboolean process_deployment(JsonNode *req_root, GError **error)
                   artifact->name, artifact->version, artifact->size, artifact->download_url);
 
         // Check if there is enough free diskspace
-        long freespace = get_available_space(hawkbit_config->bundle_download_location, &ierror);
+        gint64 freespace = get_available_space(hawkbit_config->bundle_download_location, &ierror);
         if (freespace == -1) {
                 feedback(feedback_url, action_id, ierror->message, "failure", "closed", NULL);
                 g_propagate_error(error, ierror);
                 status = -4;
                 goto proc_error;
         } else if (freespace < artifact->size) {
-                g_autofree gchar *msg = g_strdup_printf("Not enough free space. File size: %" G_GINT64_FORMAT  ". Free space: %ld",
+                g_autofree gchar *msg = g_strdup_printf("Not enough free space. File size: %" G_GINT64_FORMAT  ". Free space: %" G_GINT64_FORMAT,
                                                         artifact->size, freespace);
                 g_debug("%s", msg);
                 // Notify hawkbit that there is not enough free space.
@@ -706,6 +783,63 @@ proc_error:
         g_object_unref(json_response_parser);
         // Lets cleanup processing deployment failed
         process_artifact_cleanup(artifact);
+        process_deployment_cleanup();
+        return FALSE;
+}
+
+//process cancel action
+static gboolean process_cancel_action(JsonNode *req_root, GError **error)
+{
+        if (action_id) {
+                g_warning("Canceling action is already in progress...");
+                return FALSE;
+        }
+
+        // get cancelAction url
+        gchar *cancelAction = json_get_string(req_root, "$._links.cancelAction.href");
+        if (cancelAction == NULL) {
+                g_set_error(error,1,1,"Failed to parse cancel action response 1.");
+                return FALSE;
+        }
+
+        // get resource id and action id from url
+        gchar** groups = regex_groups("/cancelAction/(.+)$", cancelAction, NULL);
+        if (groups == NULL) {
+                g_set_error(error,1,2,"Failed to parse cancel action response 2.");
+                return FALSE;
+        }
+        action_id = g_strdup(groups[1]);
+        g_strfreev(groups);
+        g_free(cancelAction);
+
+        // build urls for cancelAction
+        g_autofree gchar *get_resource_url = build_api_url(
+                g_strdup_printf("/%s/controller/v1/%s/cancelAction/%s", hawkbit_config->tenant_id,
+                                hawkbit_config->controller_id, action_id));
+        g_autofree gchar *feedback_url = build_api_url(
+                g_strdup_printf("/%s/controller/v1/%s/cancelAction/%s/feedback", hawkbit_config->tenant_id,
+                                hawkbit_config->controller_id, action_id));
+
+        // get cancelAction resource
+        JsonParser *json_response_parser = NULL;
+        int status = rest_request(GET, get_resource_url, NULL, &json_response_parser, error);
+        if (status != 200 || json_response_parser == NULL) {
+                g_debug("Failed to get cancelAction resource from hawkbit server. Status: %d", status);
+                goto proc_error;
+        }
+        JsonNode *resp_root = json_parser_get_root(json_response_parser);
+        g_debug("Cancel Action response: %s\n", json_to_string(resp_root, TRUE));
+
+        feedback(feedback_url, action_id, "Success to cancel the action.", "success", "closed", NULL);
+        g_message("Success to cancel action %s.", action_id);
+        g_message("Cancellation completion is finished successfully.");
+
+        g_object_unref(json_response_parser);
+        process_deployment_cleanup();
+        return TRUE;
+
+proc_error:
+        g_object_unref(json_response_parser);
         process_deployment_cleanup();
         return FALSE;
 }
@@ -761,10 +895,9 @@ static gboolean hawkbit_pull_cb(gpointer user_data)
                                 g_message("No new software.");
                         }
                         if (json_contains(json_root, "$._links.cancelAction")) {
-                                //TODO: implement me
-                                g_warning("cancel action not supported");
+                                g_message("Received cancelation action.");
+                                process_cancel_action(json_root, &error);
                         }
-
                         g_object_unref(json_response_parser);
                 }
 
@@ -861,3 +994,4 @@ finish:
 
         return res;
 }
+
