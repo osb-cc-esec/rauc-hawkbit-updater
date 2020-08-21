@@ -669,6 +669,7 @@ down_error:
         return NULL;
 }
 
+//process deployment action
 static gboolean process_deployment(JsonNode *req_root, GError **error)
 {
         GError *ierror = NULL;
@@ -786,6 +787,63 @@ proc_error:
         return FALSE;
 }
 
+//process cancel action
+static gboolean process_cancel_action(JsonNode *req_root, GError **error)
+{
+        if (action_id) {
+                g_warning("Canceling action is already in progress...");
+                return FALSE;
+        }
+
+        // get cancelAction url
+        gchar *cancelAction = json_get_string(req_root, "$._links.cancelAction.href");
+        if (cancelAction == NULL) {
+                g_set_error(error,1,1,"Failed to parse cancel action response 1.");
+                return FALSE;
+        }
+
+        // get resource id and action id from url
+        gchar** groups = regex_groups("/cancelAction/(.+)$", cancelAction, NULL);
+        if (groups == NULL) {
+                g_set_error(error,1,2,"Failed to parse cancel action response 2.");
+                return FALSE;
+        }
+        action_id = g_strdup(groups[1]);
+        g_strfreev(groups);
+        g_free(cancelAction);
+
+        // build urls for cancelAction
+        g_autofree gchar *get_resource_url = build_api_url(
+                g_strdup_printf("/%s/controller/v1/%s/cancelAction/%s", hawkbit_config->tenant_id,
+                                hawkbit_config->controller_id, action_id));
+        g_autofree gchar *feedback_url = build_api_url(
+                g_strdup_printf("/%s/controller/v1/%s/cancelAction/%s/feedback", hawkbit_config->tenant_id,
+                                hawkbit_config->controller_id, action_id));
+
+        // get cancelAction resource
+        JsonParser *json_response_parser = NULL;
+        int status = rest_request(GET, get_resource_url, NULL, &json_response_parser, error);
+        if (status != 200 || json_response_parser == NULL) {
+                g_debug("Failed to get cancelAction resource from hawkbit server. Status: %d", status);
+                goto proc_error;
+        }
+        JsonNode *resp_root = json_parser_get_root(json_response_parser);
+        g_debug("Cancel Action response: %s\n", json_to_string(resp_root, TRUE));
+
+        feedback(feedback_url, action_id, "Success to cancel the action.", "success", "closed", NULL);
+        g_message("Success to cancel action %s.", action_id);
+        g_message("Cancellation completion is finished successfully.");
+
+        g_object_unref(json_response_parser);
+        process_deployment_cleanup();
+        return TRUE;
+
+proc_error:
+        g_object_unref(json_response_parser);
+        process_deployment_cleanup();
+        return FALSE;
+}
+
 
 void hawkbit_init(struct config *config, GSourceFunc on_install_ready)
 {
@@ -837,10 +895,9 @@ static gboolean hawkbit_pull_cb(gpointer user_data)
                                 g_message("No new software.");
                         }
                         if (json_contains(json_root, "$._links.cancelAction")) {
-                                //TODO: implement me
-                                g_warning("cancel action not supported");
+                                g_message("Received cancelation action.");
+                                process_cancel_action(json_root, &error);
                         }
-
                         g_object_unref(json_response_parser);
                 }
 

@@ -4,3 +4,4 @@ include/*-gen.h
 include/*.gch
 # build
 build/
+.vscode/
