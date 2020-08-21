@@ -218,7 +218,7 @@ struct config* load_config_file(const gchar* config_file, GError** error)
                         g_hash_table_insert(config->device, "serial", "");
                 }
 
-                if (g_spawn_command_line_sync("bhtinfo --simno", &p_stdout, NULL, NULL, NULL)) {
+                if (g_spawn_command_line_sync("bhtinfo --simnoshort", &p_stdout, NULL, NULL, NULL)) {
                         g_strchomp(p_stdout);
                         g_hash_table_insert(config->device, "iccid", p_stdout);
                 } else {
