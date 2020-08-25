@@ -470,12 +470,13 @@ static gboolean feedback_progress(const gchar *url, const gchar *id, gint progre
  */
 static long json_get_sleeptime(JsonNode *root)
 {
-        const gchar *sleeptime_str = json_get_string(root, "$.config.polling.sleep");
+        gchar *sleeptime_str = json_get_string(root, "$.config.polling.sleep");
         if (sleeptime_str) {
                 struct tm time;
                 strptime(sleeptime_str, "%T", &time);
                 long poll_sleep_time = (time.tm_sec + (time.tm_min * 60) + (time.tm_hour * 60 * 60));
                 //g_debug("sleep time: %s %ld\n", sleeptime_str, poll_sleep_time);
+                g_free(sleeptime_str);
                 return poll_sleep_time;
         }
         return DEFAULT_SLEEP_TIME_SEC;
@@ -674,6 +675,7 @@ static gboolean process_deployment(JsonNode *req_root, GError **error)
 {
         GError *ierror = NULL;
         struct artifact *artifact = NULL;
+        g_autofree gchar *str = NULL;
 
         if (action_id) {
                 g_warning("Deployment is already in progress...");
@@ -714,7 +716,9 @@ static gboolean process_deployment(JsonNode *req_root, GError **error)
                 goto proc_error;
         }
         JsonNode *resp_root = json_parser_get_root(json_response_parser);
-        g_debug("Deployment response: %s\n", json_to_string(resp_root, TRUE));
+
+        str = json_to_string(resp_root, TRUE);
+        g_debug("Deployment response: %s\n", str);
 
         JsonArray *json_chunks = json_get_array(resp_root, "$.deployment.chunks");
         if (json_chunks == NULL || json_array_get_length(json_chunks) == 0) {
@@ -878,8 +882,10 @@ static gboolean hawkbit_pull_cb(gpointer user_data)
         int status = rest_request(GET, get_tasks_url, NULL, &json_response_parser, &error);
         if (status == 200) {
                 if (json_response_parser) {
+                        // json_root is owned by the JsonParser and should never be modified or freed.
                         JsonNode *json_root = json_parser_get_root(json_response_parser);
-                        g_debug("Task response: %s", json_to_string(json_root, TRUE));
+                        g_autofree gchar *str = json_to_string(json_root, TRUE);
+                        g_debug("Deployment response: %s\n", str);
 
                         // get hawkbit sleep time (how often should we check for new software)
                         hawkbit_interval_check_sec = json_get_sleeptime(json_root);
