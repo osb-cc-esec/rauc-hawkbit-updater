@@ -30,7 +30,7 @@ static const gint DEFAULT_CONNECTTIMEOUT  = 20;     // 20 sec.
 static const gint DEFAULT_TIMEOUT         = 60;     // 1 min.
 static const gint DEFAULT_RETRY_WAIT      = 60;     // 1 min.
 static const gboolean DEFAULT_SSL         = TRUE;
-static const gboolean DEFAULT_SSL_VERIFY  = FALSE;
+static const gboolean DEFAULT_SSL_VERIFY  = TRUE;
 static const gchar * DEFAULT_LOG_LEVEL    = "message";
 
 void config_file_free(struct config *config)
