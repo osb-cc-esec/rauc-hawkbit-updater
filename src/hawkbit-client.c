@@ -198,9 +198,9 @@ static gboolean get_binary(const gchar* download_url, const gchar* file, gint64 
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &gb);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, hawkbit_config->ssl_verify ? 1L : 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, hawkbit_config->ssl_verify ? 1L : 0L);
-        /* abort if slower than 100 bytes/sec during 60 seconds */
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+        /* abort if slower than 1 MB/sec during 20 minutes */
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 1200L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1000000L);
         // Setup request headers
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "Accept: application/octet-stream");
