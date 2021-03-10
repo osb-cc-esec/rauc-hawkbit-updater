@@ -787,7 +787,7 @@ proc_error:
         g_object_unref(json_response_parser);
         // Lets cleanup processing deployment failed
         process_artifact_cleanup(artifact);
-        process_deployment_cleanup();
+        process_deployment_cleanup_action_id();
         return FALSE;
 }
 
