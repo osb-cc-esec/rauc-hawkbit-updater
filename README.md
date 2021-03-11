@@ -1,7 +1,7 @@
 RAUC hawkBit Updater
 ====================
 
-[![Build Status](https://travis-ci.com/rauc/rauc-hawkbit-updater.svg?branch=master)](https://travis-ci.com/rauc/rauc-hawkbit-updater)
+[![Build Status](https://github.com/rauc/rauc-hawkbit-updater/workflows/tests/badge.svg)](https://github.com/rauc/rauc-hawkbit-updater/actions)
 [![License](https://img.shields.io/badge/license-LGPLv2.1-blue.svg)](https://raw.githubusercontent.com/rauc/rauc-hawkbit-updater/master/LICENSE)
 [![Total alerts](https://img.shields.io/lgtm/alerts/g/rauc/rauc-hawkbit-updater.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/rauc/rauc-hawkbit-updater/alerts/)
 [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/rauc/rauc-hawkbit-updater.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/rauc/rauc-hawkbit-updater/context:cpp)
@@ -39,6 +39,7 @@ Setup target (device) configuration file:
   connect_timeout           = 20
   timeout                   = 60
   log_level                 = debug
+  post_update_reboot        = false
 
   [device]
   product                   = Terminator
